@@ -4,9 +4,11 @@
 # 适用：iStoreOS / OpenWrt 24.10（opkg）和 25.12（apk），x86_64 / aarch64 都行
 #       PassWall 用 .run 或 apk/opkg 正常装好之后再跑
 #
-# 用法：sh pw-bottom.sh            安装底栏（可重复执行，PassWall 升级后再跑一次即可）
-#       sh pw-bottom.sh offline    不联网，直接用 /root/pw-bottom 里的缓存素材
-#       sh pw-bottom.sh remove     去掉底栏，恢复官方原样
+# 用法：curl -fsSL https://raw.githubusercontent.com/Rn1388/pw-bottom/main/pw-bottom.sh | sh
+#       装好后本机会留下 /root/pw-bottom/apply.sh，以后 PassWall 升级了直接运行它即可：
+#         /root/pw-bottom/apply.sh            重新加上底栏（可重复执行）
+#         /root/pw-bottom/apply.sh offline    不联网，只用本地缓存素材
+#         /root/pw-bottom/apply.sh remove     去掉底栏，恢复官方原样
 #
 # 原理：从 kiddin9 的 luci-app-passwall 包里只取底栏需要的东西——
 #       status_bottom.htm、8 个站点图标、237 面国旗、控制器里的 4 个函数（check_site /
@@ -22,6 +24,8 @@ VIEW=$L/view/passwall/global
 WWW=$R/www/luci-static/passwall
 TMP=$R/tmp/pw-bottom.$$
 
+SELF_URLS="https://raw.githubusercontent.com/Rn1388/pw-bottom/main/pw-bottom.sh https://cdn.jsdelivr.net/gh/Rn1388/pw-bottom@main/pw-bottom.sh"
+
 ROUTE='entry({"admin", "services", appname, "ip"}, call("check_ip")).leaf = true'
 TPL='m:appendTemplate("/global/status_bottom")'
 
@@ -31,6 +35,38 @@ refresh() {
 	[ -n "$R" ] && return
 	rm -rf /tmp/luci-*
 	/etc/init.d/rpcd restart >/dev/null 2>&1
+}
+
+# 在本机留一份脚本和 apply.sh，以后升级 PassWall 后直接运行 /root/pw-bottom/apply.sh
+install_local() {
+	mkdir -p "$D"
+	if [ -f "$0" ] && grep -q 'pw-bottom' "$0" 2>/dev/null; then
+		cp "$0" "$D/pw-bottom.sh.new"                        # 以文件方式运行：复制自己
+	else
+		for u in $SELF_URLS; do                              # curl | sh 方式运行：重新下载一份
+			curl -fsSL -m 20 -o "$D/pw-bottom.sh.new" "$u" 2>/dev/null && break
+		done
+	fi
+	if [ -s "$D/pw-bottom.sh.new" ] && grep -q 'pw-bottom' "$D/pw-bottom.sh.new"; then
+		mv "$D/pw-bottom.sh.new" "$D/pw-bottom.sh"
+	else
+		rm -f "$D/pw-bottom.sh.new"
+	fi
+	[ -f "$D/pw-bottom.sh" ] || { say "提示：没能在本机保存脚本，以后请继续用 curl 命令运行"; return; }
+	cat > "$D/apply.sh" << EOF
+#!/bin/sh
+# PassWall 升级后运行本文件，重新加上底栏。参数：（无）/ offline / remove
+D=$D
+if [ "\$1" != offline ]; then
+	for u in $SELF_URLS; do
+		curl -fsSL -m 20 -o "\$D/pw-bottom.sh.new" "\$u" 2>/dev/null && grep -q pw-bottom "\$D/pw-bottom.sh.new" \\
+			&& mv "\$D/pw-bottom.sh.new" "\$D/pw-bottom.sh" && break
+	done
+	rm -f "\$D/pw-bottom.sh.new"
+fi
+exec sh "\$D/pw-bottom.sh" "\$@"
+EOF
+	chmod +x "$D/apply.sh"
 }
 
 # 去掉本脚本打过的补丁（也兼容早先手工 apply.sh 打的、没有标记的版本）
@@ -140,4 +176,6 @@ cp -r "$D/img" "$D/flags" "$WWW/"
 
 refresh
 rm -rf "$TMP"
-say "完成。浏览器强制刷新 PassWall 页面即可看到底栏。PassWall 升级后再跑一次本脚本。"
+install_local
+say "完成。浏览器强制刷新 PassWall 页面即可看到底栏。"
+say "以后 PassWall 升级后底栏会消失，运行：/root/pw-bottom/apply.sh"
