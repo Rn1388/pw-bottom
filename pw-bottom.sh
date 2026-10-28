@@ -89,13 +89,29 @@ pw_installed() {
 # 二、修软件源：让 apk/opkg update 一个错都没有（.run 里的安装脚本要求这一点）
 # ======================================================================
 # apk：输出 "WARNING: updating and opening <url>: <原因>" 的就是失败的源
-apk_bad() {
-	apk update 2>&1 | sed -n 's|^WARNING: updating and opening \(https*://[^ ]*\): .*|\1|p'
+# 两种格式都要认：没有缓存时是 "updating and opening <url>: ..."，
+# 有旧缓存时是 "updating <url>: ..."（结果显示为 stale），两种都会让 apk update 返回失败
+apk_bad1() {
+	apk update 2>&1 | sed -n \
+		-e 's|^WARNING: updating and opening \(https*://[^ ]*\): .*|\1|p' \
+		-e 's|^WARNING: updating \(https*://[^ ]*\): .*|\1|p'
 }
 # opkg：输出 "*** Failed to download the package list from <url>/Packages.gz"
-opkg_bad() {
+opkg_bad1() {
 	opkg update 2>&1 | sed -n 's|^\*\*\* Failed to download the package list from \(https*://[^ ]*\)/Packages\.gz.*|\1|p'
 }
+# 源偶尔会连不上一次，所以最多试 3 次，有一次全通就算正常；3 次都失败才认定是坏源
+retry_bad() {
+	_n=1
+	while :; do
+		_b=$($1)
+		[ -z "$_b" ] && return 0
+		[ $_n -ge 3 ] && { echo "$_b"; return 0; }
+		_n=$((_n + 1)); sleep 3
+	done
+}
+apk_bad()  { retry_bad apk_bad1; }
+opkg_bad() { retry_bad opkg_bad1; }
 fix_sources() {
 	say "检查软件源（$PM）..."
 	if [ "$PM" = apk ]; then
@@ -175,9 +191,17 @@ install_passwall() {
 			|| die "下载失败。可以设置 GH_PROXY 加速，或在电脑上下载后传到路由器，用 RUN=/路径 指定"
 	fi
 
-	say "开始安装 PassWall..."
-	sh "$PKG" || say "安装脚本返回了错误，下面检查是否装上"
-	pw_installed || die "PassWall 没有装上，请看上面的输出"
+	# .run 里的安装脚本自己会再跑一次 update，源偶尔抽风一次就会中止，所以失败了重试
+	_t=1
+	while :; do
+		say "开始安装 PassWall（第 $_t 次）..."
+		sh "$PKG" && pw_installed && break
+		pw_installed && break
+		[ $_t -ge 3 ] && die "试了 3 次都没装上，请看上面的输出。常见原因是某个软件源连不上"
+		say "没装上，多半是软件源偶尔连不上，5 秒后重试..."
+		sleep 5
+		_t=$((_t + 1))
+	done
 	[ -z "$RUN" ] && rm -f "$PKG"
 	say "PassWall 安装完成"
 }
